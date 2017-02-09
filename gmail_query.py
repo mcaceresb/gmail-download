@@ -31,11 +31,7 @@ Notes
 -----
 
 While I have made an effort to make this script platform independent, I
-have only tested it on my local Linux machine. My main concern is that
-I don't append the .eml file extension to any messages, since my OS
-automatically detects the file type. Windows in particular will probably
-have a hard time with the downloaded format. To append a file extension
-specify `-e eml`
+have only tested it on my local Linux machine.
 
 I realize that pandas is a rather annoying dependence to have, but I
 wanted to download threaded messages into the same subfolder and using
@@ -47,23 +43,19 @@ depth of the message thread or whether a "thread" is really a single
 message. Hence all the awkward try/except pairs that try to find the
 messages within a thread: An e-mail object can be a message or a thread
 and this needs to handle both.
-
-BeautifulSoup is a completely optional dependency. The only purpose it
-serves is to print HTML messages in a pretty format. You might think
-this makes no sense since the e-mail app opening the file won't care, but
-I often look at my e-mails in plain text. It also makes searching your
-much easier for me.
 """
 
 from __future__ import division, print_function
-from bs4 import BeautifulSoup as bs
 from dateutil.parser import parse
+from bitmath import parse_string
+from operator import itemgetter
 from apiclient import discovery
 from oauth2client import client
 from oauth2client import tools
 from dateutil import tz
-from operator import itemgetter
 from shutil import move
+from os import path
+import pypandoc as pandoc
 import pandas as pd
 import oauth2client
 import httplib2
@@ -71,127 +63,406 @@ import datetime
 import base64
 import string
 import json
+import sys
 import os
 import re
 
-#################################
-#  EDIT THIS IF YOU'RE NOT ME!  #
-#################################
-
-my_email   = "mauricio.caceres.bravo@gmail.com"
-my_secret  = "client_secret.json"
-my_appname = 'Gmail API Python Quickstart'
-
-#################################
-#  EDIT THIS IF YOU'RE NOT ME!  #
-#################################
-
-# ---------------------------------------------------------------------
-# Parse arguments
-
-try:
-    import argparse
-    parser = argparse.ArgumentParser(parents = [tools.argparser])
-
-    parser.add_argument('-o', '--output',
-                        dest     = 'out',
-                        type     = str,
-                        nargs    = 1,
-                        metavar  = 'OUT',
-                        default  = ['~/Documents/personal/99-email-dump'],
-                        help     = "Output folder.",
-                        required = False)
-
-    parser.add_argument('-d', '--date',
-                        dest     = 'date',
-                        type     = str,
-                        nargs    = 1,
-                        metavar  = 'DATE',
-                        default  = [None],
-                        help     = "Date to query.",
-                        required = False)
-
-    parser.add_argument('-b', '--days-back',
-                        dest     = 'days_back',
-                        type     = int,
-                        nargs    = 1,
-                        metavar  = 'days_back',
-                        default  = [0],
-                        help     = "Days back to query e-mail.",
-                        required = False)
-
-    parser.add_argument('-e', '--ext',
-                        dest     = 'ext',
-                        type     = str,
-                        nargs    = 1,
-                        metavar  = 'ext',
-                        default  = [''],
-                        help     = "File extension.",
-                        required = False)
-
-    parser.add_argument('-f', '--first',
-                        dest     = 'first',
-                        action   = 'store_true',
-                        help     = "Save by first message in thread.",
-                        required = False)
-
-    parser.add_argument('-m', '--mail',
-                        dest     = 'mail',
-                        action   = 'store_true',
-                        help     = "Send notification e-mail.",
-                        required = False)
-
-    parser.add_argument('--html',
-                        dest     = 'html',
-                        action   = 'store_true',
-                        help     = "Parse resulting EML files into HTML files",
-                        required = False)
-
-    parser.add_argument('-s', '--sort',
-                        dest     = 'sort',
-                        action   = 'store_true',
-                        help     = "Sort e-mail using sorting rules.",
-                        required = False)
-
-    parser.add_argument('--sort-rules',
-                        dest     = 'sort_rules',
-                        type     = str,
-                        nargs    = 1,
-                        metavar  = 'SORT_RULES',
-                        default  = ['~/Documents/code/bin/gmail_rules.json'],
-                        help     = "File with sorting rules.",
-                        required = False)
-
-    flags  = parser.parse_args()
-    outdir = os.path.expanduser(flags.out[0])
-    todays = flags.date[0]
-    bdays  = flags.days_back[0]
-    ext    = flags.ext[0]
-    mail   = flags.mail
-    html   = flags.html
-    first  = flags.first
-    sort   = flags.sort
-    sort_rules = os.path.expanduser(flags.sort_rules[0])
-except:
-    flags  = None
-    outdir = os.path.expanduser('~/Documents/personal/99-email-dump')
-    todays = None
-    ext    = ''
-    bdays  = 0
-    html   = False
-    mail   = False
-    first  = False
-    sort   = False
-    sort_rules = os.path.expanduser('~/Documents/code/bin/gmail_rules.json')
-
 # Python 2/3 compat
 # -----------------
+
+try:
+    from ConfigParser import ConfigParser, RawConfigParser
+except:
+    from configparser import ConfigParser, RawConfigParser
+
+try:
+    input = __builtins__.raw_input
+except:
+    raw_input = input
 
 try:
     unicode is unicode
 except NameError:
     def unicode(x):
         return str(x, 'utf-8')
+
+# ---------------------------------------------------------------------
+# Main function wrapper
+
+cfgfile  = path.join(path.expanduser('~'), '.gmail_query.conf')
+ext_dict = {'eml': '.eml',
+            'docx': '.docx',
+            'html': '.html',
+            'html5': '.html',
+            'json': '.json',
+            'latex': '.tex',
+            'markdown': '.md',
+            'markdown_github': '.md',
+            'markdown_mmd': '.md',
+            'markdown_phpextra': '.md',
+            'markdown_strict': '.md',
+            'plain': '.txt',
+            'rst': '.rst'}
+
+def main():
+    cfg_init(cfgfile)
+    def_args = args_fallback()
+    cfg_args = args_config(cfgfile, def_args)
+    cli_args = args_cli(cfg_args)
+
+    query = gmail_query(cli_args.outdir, flags = cli_args)
+    query.query(todays  = cli_args.date,
+                bdays   = cli_args.bdays,
+                otype   = cli_args.otype,
+                ext     = cli_args.ext,
+                att_get = cli_args.att_get,
+                att_max = cli_args.att_max,
+                mail    = cli_args.mail,
+                first   = cli_args.first,
+                sort_case  = cli_args.sort_case,
+                sort_rules = cli_args.sort_file)
+
+# ---------------------------------------------------------------------
+# Create .conf file, update .conf file
+
+def cfg_init(cfgfile):
+    try:
+        setup = sys.argv[1] == 'setup'
+    except:
+        setup = False
+
+    if not path.isfile(cfgfile) or setup:
+        cfgopts = {'Gmail.email': ["regex", "[^@]+@[^@]+\.[^@]+"],
+                   'Gmail.secret': ["file", ""],
+                   'Gmail.appname': ["anything", ""],
+                   'Setup.output_folder': ["anything", ""],
+                   'Setup.output_type': ["regex", '|'.join(ext_dict.keys())],
+                   'Setup.output_ext': ["anything", ""],
+                   'Setup.download_attachments': ["regex", "True|False"],
+                   'Setup.max_attachment_size': ["anything", ""],
+                   'Setup.query_days': ["regex", "\d+"],
+                   'Setup.threaded_first': ["regex", "True|False"],
+                   'Setup.notify_email': ["regex", "True|False"],
+                   'Setup.sorting_rules': ["file", ""],
+                   'Setup.sorting_case_sensitive': ["regex", "True|False"]}
+
+        if not path.isfile(cfgfile):
+            cfgparser    = RawConfigParser()
+            msg_notfound = "~/.gmail_query.conf not found. Create one? [Y/n] "
+            cfg_action   = 'new'
+        elif len(sys.argv) > 2:
+            cfg_action   = 'update'
+            cfg_setting  = sys.argv[2]
+            try:
+                cfg_how, cfg_check = cfgopts[cfg_setting]
+            except:
+                raise Warning("Setting '{}' not available".format(cfg_setting))
+
+            try:
+                cfg_value = sys.argv[3]
+            except:
+                raise Warning("Provider a value for '{}'".format(cfg_setting))
+
+            if cfg_how == 'regex':
+                if not re.match(cfg_check, cfg_value):
+                    cfg_match = (cfg_setting, cfg_check)
+                    raise Warning("'{}' should match '{}'".format(*cfg_match))
+            elif cfg_how == 'file':
+                if not path.isfile(cfg_setting):
+                    raise Warning("'{}' does not exist.".format(cfg_value))
+
+            cfgparser = ConfigParser()
+            cfgparser.read(cfgfile)
+            cfg_section, cfg_option = cfg_setting.split('.')
+
+            if cfg_section not in cfgparser.sections():
+                cfgparser.add_section(cfg_section)
+
+            cfgparser.set(cfg_section, cfg_option, cfg_value)
+            with open(cfgfile, 'w') as cfg:
+                cfgparser.write(cfg)
+
+            sys.exit()
+
+        elif len(sys.argv) > 4:
+            raise Warning("Can only update one option at a time.")
+        else:
+            cfg_action   = 'replace'
+            msg_notfound = "Replace ~/.gmail_query.conf? [y/N] "
+
+        opt_notfound = ['y', 'yes', 'n', 'no', '']
+        msg_email    = "What is your e-mail address? "
+        opt_email    = "[^@]+@[^@]+\.[^@]+"
+        msg_secret   = "Where is your client_secret.json file? "
+        msg_appname  = "What is the name of your Gmail API app? "
+
+        cont_yn = input(msg_notfound)
+        while cont_yn.lower() not in opt_notfound:
+            cont_yn = input("Please answer 'y' or 'n'. " + msg_notfound)
+
+        action = ['n', 'no'] + [] if cfg_action == 'new' else ['']
+        if cont_yn.lower() in action:
+            print('You need to create a configuration file. See help.')
+            sys.exit()
+
+        my_email = input(msg_email)
+        while not re.findall(opt_email, my_email):
+            msg_err  = "Enter a valid email. " + msg_email
+            my_email = input(msg_err)
+
+        my_secret = input(msg_secret)
+        while not path.isfile(my_secret):
+            msg_err   = "'{}' not found. ".format(my_secret) + msg_secret
+            my_secret = input(msg_err)
+
+        my_appname = input(msg_appname)
+        while my_appname == '':
+            msg_err   = "Provider a name. ".format(my_appname) + msg_appname
+            my_secret = input(msg_err)
+
+        print(os.linesep + "You can also specify the default output folder.")
+        def_outdir = input("(press <enter> to skip): ")
+
+        with open(cfgfile, 'w') as cfg:
+            cfg.write("[Gmail]" + os.linesep)
+            cfg.write("email   = {}".format(my_email + os.linesep))
+            cfg.write("secret  = {}".format(my_secret + os.linesep))
+            cfg.write("appname = {}".format(my_appname + os.linesep))
+            cfg.write(os.linesep)
+
+            if def_outdir != '':
+                cfg.write("[Setup]" + os.linesep)
+                cfg.write("output_folder = {}".format(def_outdir + os.linesep))
+
+        sys.exit(0)
+
+# ---------------------------------------------------------------------
+# Parse fallback options
+
+class args_fallback():
+
+    """Fallback default arguments"""
+
+    def __init__(self):
+        self.outdir    = ''
+        self.bdays     = 0
+        self.otype     = 'html'
+        self.ext       = ''
+        self.att_get   = False
+        self.att_max   = '20MiB'
+        self.mail      = False
+        self.first     = False
+        self.sort_file = ''
+        self.sort_case = False
+        self.sort      = False
+
+# ---------------------------------------------------------------------
+# Parse config file options
+
+class args_config():
+
+    """Parse arguments from configuration file"""
+
+    def __init__(self, cfgfile, fallback):
+        cfgparser = ConfigParser()
+        cfgparser.read(cfgfile)
+
+        # Required
+        # --------
+
+        msg = 'Add {} = {} under [{}] in ~/.gmail_query.conf'
+        try:
+            self.my_email = cfgparser.get('Gmail', 'email')
+        except:
+            raise Warning(msg.format('email', 'g-mail', 'Gmail'))
+
+        try:
+            self.my_secret = cfgparser.get('Gmail', 'secret')
+        except:
+            raise Warning(msg.format('secret', 'client_secret.json', 'Gmail'))
+
+        try:
+            self.my_appname = cfgparser.get('Gmail', 'appname')
+        except:
+            raise Warning(msg.format('appname', 'API name', 'Gmail'))
+
+        # Optional
+        # --------
+
+        try:
+            self.outdir = cfgparser.get('Setup', 'output_folder')
+        except:
+            self.outdir = fallback.outdir
+
+        try:
+            self.otype = cfgparser.get('Setup', 'output_type')
+        except:
+            self.otype = fallback.otype
+
+        try:
+            self.ext = cfgparser.get('Setup', 'output_ext')
+        except:
+            self.ext = fallback.ext
+
+        try:
+            self.att_get = cfgparser.getboolean('Setup',
+                                                'download_attachments')
+        except:
+            self.att_get = fallback.att_get
+
+        try:
+            self.att_max = cfgparser.get('Setup', 'max_attachment_size')
+        except:
+            self.att_max = fallback.att_max
+
+        try:
+            self.bdays = cfgparser.getint('Setup', 'query_days')
+        except:
+            self.bdays = fallback.bdays
+
+        try:
+            self.first = cfgparser.getboolean('Setup', 'threaded_first')
+        except:
+            self.first = fallback.first
+
+        try:
+            self.mail = cfgparser.getboolean('Setup', 'notify_email')
+        except:
+            self.mail = fallback.mail
+
+        try:
+            self.sort_file = cfgparser.get('Setup', 'sorting_rules')
+        except:
+            self.sort_file = fallback.sort_file
+
+        try:
+            self.sort_case = cfgparser.getboolean('Setup',
+                                                  'sorting_case_sensitive')
+        except:
+            self.sort_case = fallback.sort_case
+
+# ---------------------------------------------------------------------
+# Parse CLI arguments
+
+
+class args_cli():
+
+    """Parse command-line arguments"""
+
+    def __init__(self, defaults):
+
+        import argparse
+        parser = argparse.ArgumentParser(parents = [tools.argparser])
+
+        if defaults.outdir == '':
+            parser.add_argument('-o', '--output',
+                                dest     = 'out',
+                                type     = str,
+                                nargs    = 1,
+                                metavar  = 'OUT',
+                                help     = "Output folder.",
+                                required = True)
+        else:
+            parser.add_argument('-o', '--output',
+                                dest     = 'out',
+                                type     = str,
+                                nargs    = 1,
+                                default  = [defaults.outdir],
+                                metavar  = 'OUT',
+                                help     = "Output folder.",
+                                required = False)
+
+        parser.add_argument('-d', '--date',
+                            dest     = 'date',
+                            type     = str,
+                            nargs    = 1,
+                            metavar  = 'DATE',
+                            default  = [None],
+                            help     = "Date to query.",
+                            required = False)
+
+        parser.add_argument('-t', '--output-type',
+                            dest     = 'otype',
+                            type     = str,
+                            nargs    = 1,
+                            metavar  = 'OUTPUT_TYPE',
+                            default  = [defaults.otype],
+                            help     = "Output type.",
+                            required = False)
+
+        parser.add_argument('-e', '--ext',
+                            dest     = 'ext',
+                            type     = str,
+                            nargs    = 1,
+                            metavar  = 'ext',
+                            default  = [defaults.ext],
+                            help     = "File extension.",
+                            required = False)
+
+        parser.add_argument('-a', '--attachments',
+                            dest     = 'attachments',
+                            action   = 'store_true',
+                            help     = "Download attachments.",
+                            required = False)
+
+        parser.add_argument('--attachment-max-size',
+                            dest     = 'max_size',
+                            type     = str,
+                            nargs    = 1,
+                            metavar  = 'MAX_SIZE',
+                            default  = [defaults.att_max],
+                            help     = "Largest attachment size.",
+                            required = False)
+
+        parser.add_argument('-b', '--days-back',
+                            dest     = 'days_back',
+                            type     = int,
+                            nargs    = 1,
+                            metavar  = 'DAYS_BACK',
+                            default  = [defaults.bdays],
+                            help     = "Days back to query e-mail.",
+                            required = False)
+
+        parser.add_argument('-f', '--first',
+                            dest     = 'first',
+                            action   = 'store_true',
+                            help     = "Save by first message in thread.",
+                            required = False)
+
+        parser.add_argument('-m', '--mail',
+                            dest     = 'mail',
+                            action   = 'store_true',
+                            help     = "Send notification e-mail.",
+                            required = False)
+
+        parser.add_argument('--sort-rules',
+                            dest     = 'sort_rules',
+                            type     = str,
+                            nargs    = 1,
+                            metavar  = 'SORT_RULES',
+                            default  = [defaults.sort_file],
+                            help     = "File with sorting rules.",
+                            required = False)
+
+        parser.add_argument('--case-sensitive',
+                            dest     = 'case',
+                            action   = 'store_true',
+                            help     = "Sorting rules are case-sensitive.",
+                            required = False)
+
+        self.flags     = parser.parse_args()
+        self.outdir    = os.path.expanduser(self.flags.out[0])
+        self.date      = self.flags.date[0]
+        self.otype     = self.flags.otype[0]
+        self.ext       = self.flags.ext[0]
+        self.att_get   = self.flags.attachments or defaults.att_get
+        self.att_max   = self.flags.max_size[0]
+        self.bdays     = self.flags.days_back[0]
+        self.first     = self.flags.first or defaults.first
+        self.mail      = self.flags.mail or defaults.mail
+        self.sort_file = os.path.expanduser(self.flags.sort_rules[0])
+        self.sort_case = self.flags.case or defaults.sort_case
+        self.sort      = self.sort_file != ''
 
 # ---------------------------------------------------------------------
 # Main query wrapper
@@ -218,14 +489,17 @@ class gmail_query():
     >>> query.query('2016-01-01')
     """
 
-    def __init__(self, outdir = '~/Documents/personal/99-email-dump'):
+    def __init__(self, outdir, flags = None, cfgfile = cfgfile):
         """Query gmail e-mail for the day
 
         Kwargs:
             outdir: Output directory
         """
 
-        self.outmail  = my_email
+        def_args = args_fallback()
+        cfg_args = args_config(cfgfile, def_args)
+
+        self.outmail  = cfg_args.my_email
         self.outdir   = outdir
         self.timezone = tz.tzlocal()
         self.tzstr    = datetime.datetime.now(self.timezone).tzname()
@@ -233,28 +507,34 @@ class gmail_query():
         # API info
         # --------
 
-        client_secret_file = my_secret
-        app_name = my_appname
+        client_secret_file = cfg_args.my_secret
+        app_name = cfg_args.my_appname
         scopes   = ['https://www.googleapis.com/auth/gmail.readonly',
                     'https://www.googleapis.com/auth/gmail.insert']
 
         # Create gmail messages object
         # ----------------------------
 
-        credentials   = get_credentials(app_name, client_secret_file, scopes)
+        credentials   = get_credentials(app_name,
+                                        client_secret_file,
+                                        scopes,
+                                        flags)
         http          = credentials.authorize(httplib2.Http())
         service       = discovery.build('gmail', 'v1', http    = http)
         self.messages = service.users().messages()
+        self.cfg_args = cfg_args
 
     def query(self,
-              todays = None,
-              bdays  = 0,
-              ext    = '',
-              html   = False,
-              mail   = False,
-              first  = False,
-              sort   = False,
-              sort_rules = '~/Documents/code/bin/gmail_rules.json'):
+              todays  = None,
+              bdays   = None,
+              otype   = None,
+              ext     = None,
+              att_get = None,
+              att_max = None,
+              mail    = None,
+              first   = None,
+              sort_case  = None,
+              sort_rules = None):
 
         """Query Gmail e-mail for specified date
 
@@ -269,6 +549,40 @@ class gmail_query():
             e-mails message with query results.
         """
 
+        if bdays is None:
+            bdays = self.cfg_args.bdays
+
+        if otype is None:
+            otype = self.cfg_args.otype
+
+        if ext is None:
+            ext = self.cfg_args.ext
+
+        if att_get is None:
+            att_get = self.cfg_args.att_get
+
+        if att_max is None:
+            att_max = self.cfg_args.att_max
+
+        if mail is None:
+            mail = self.cfg_args.mail
+
+        if first is None:
+            first = self.cfg_args.first
+
+        if sort_case is None:
+            sort_case = self.cfg_args.sort_case
+
+        if sort_rules is None:
+            sort_rules = self.cfg_args.sort_file
+
+        ptypes = pandoc.get_pandoc_formats()[1]
+        if otype not in ptypes and not otype == 'eml':
+            raise Warning("Output type must be: {}".format(', '.join(ptypes)))
+
+        max_size = parse_string(att_max) if att_get else None
+        sort = sort_rules != ''
+
         # Get date to query, recursively create output dir
         # ------------------------------------------------
 
@@ -281,17 +595,18 @@ class gmail_query():
         # -----------
 
         try:
-            df  = self.query_todays(todays, bdays, first)
+            df  = self.query_todays(todays, bdays, first, otype, max_size)
         except:
             df  = None
             res = "Gmail query FAILED"
 
+        ext = ext_dict[otype] if ext == '' else ext
         if df is not None:
-            print_df_query(df, outdir, self.tzstr, html)
+            print_df_query(df, outdir, self.tzstr, otype, ext)
             if sort:
                 if os.path.isfile(sort_rules):
                     try:
-                        self.sort_query(sort_rules)
+                        self.sort_query(sort_rules, sort_case)
                     except:
                         print("Sorting failed. Check '{}'".format(sort_rules))
                 else:
@@ -317,7 +632,7 @@ class gmail_query():
         else:
             print(res)
 
-    def query_todays(self, todays, bdays, first):
+    def query_todays(self, todays, bdays, first, otype, msize):
         """Get all of today's messages
 
         Args:
@@ -344,15 +659,22 @@ class gmail_query():
             return None
 
         # Loop through all messages; get message body and attachments
-        msg_ids     = set([ids['id'] for ids in todaym['messages']])
-        all_msgs    = [self.get_msg(mid) for mid in msg_ids]
-        thr_ids     = [msg['threadId'] for msg in all_msgs]
-        all_atts    = [self.parse_att(msg) for msg in all_msgs]
-        all_parsed  = [self.parse_msg(msg) for msg in all_msgs]
+        msg_ids  = set([ids['id'] for ids in todaym['messages']])
+        all_msgs = [self.get_msg(mid) for mid in msg_ids]
+        thr_ids  = [msg['threadId'] for msg in all_msgs]
+        atts     = [self.parse_att(msg, msize) for msg in all_msgs]
+        parsed   = [self.parse_msg(msg, otype) for msg in all_msgs]
 
         # Return messages as pandas data frame
-        cols  = ['threadId', 'body', 'header', 'date', 'subject', 'fn', 'att']
-        dtzip = zip(thr_ids, all_parsed, all_atts)
+        cols  = ['threadId',
+                 'body',
+                 'ft_header',
+                 'header',
+                 'date',
+                 'subject',
+                 'fn',
+                 'att']
+        dtzip = zip(thr_ids, parsed, atts)
         dfstr = '%Y-%m-%d %H:%M:%S ' + self.tzstr
         dt    = [[thr] + pmsg + att for thr, pmsg, att in dtzip]
         df    = pd.DataFrame(dt, index = msg_ids, columns = cols)
@@ -365,7 +687,7 @@ class gmail_query():
 
         return df
 
-    def sort_query(self, sort_rules):
+    def sort_query(self, sort_rules, case):
         """Sort queried e-mail into sub-folders using sort_rules
 
         Args:
@@ -395,27 +717,34 @@ class gmail_query():
         unsorted = mkdir_recursive(os.path.join(outdir, "unsorted"))
         for root, dirs, files in outwalk_static:
             if len(files) > 0:
-                for f in files:
-                    if apply_rules(srules, outdir, root, f) in srules.keys():
+                for fname in files:
+                    if apply_rules(srules,
+                                   outdir,
+                                   root,
+                                   fname,
+                                   case) in srules.keys():
                         break
 
                 if os.path.isdir(root):
                     move(root, unsorted)
 
-    def parse_att(self, msg, depth = 10, msize = 20):
+    def parse_att(self, msg, msize, depth = 10):
         """Get all attachments in message thread
 
         Args:
             msg: gmail msg
+            msize: A bitmath object with max size
 
         Kwargs:
             depth: how deep to look for parts in payload
-            msize: download attachments up do msize MiB
 
         Returns:
             All attachments found in msg, or None
 
         """
+
+        if msize is None:
+            return [None, None]
 
         parts    = msg['payload']
         att_fn   = None
@@ -434,20 +763,23 @@ class gmail_query():
 
         for part in parts:
             if part['filename']:
-                att_fn  = part['filename']
+                att_fn = part['filename']
                 att_id, att_size = part['body'].values()
-                att_mib = att_size / 1024 ** 2
-                if att_mib < msize:
+                att_bm = parse_string('{:.9f}B'.format(att_size)).best_prefix()
+                if att_size < msize.bytes:
                     att  = self.get_att(msg['threadId'], att_id)
                     body = unicode(att['data']).encode('utf-8')
                     att_data = body
                 else:
-                    msg_size = 'NOTE: Att %.2f MiB but limit was %.1f MiB'
-                    att_data = msg_size % (att_mib, msize)
+                    msg_size  = 'NOTE: Att size was %s but limit set to %s'
+                    msize_str = msize.format("{value:.1f} {unit}")
+                    att_str   = att_bm.format("{value:.1f} {unit}")
+                    att_data  = msg_size % (att_str, msize_str)
+                    att_fn   += ' [ATTACHMENT T0O LARGE]'
 
         return [att_fn, att_data]
 
-    def parse_msg(self, msg, prefer = 'text/html', depth = 10):
+    def parse_msg(self, msg, otype, prefer = 'text/html', depth = 10):
         """Get body from message, various formats
 
         Args:
@@ -511,15 +843,23 @@ class gmail_query():
         dates = datel.strftime('%a, %d %b %Y %H:%M:%S ' + self.tzstr)
 
         # Format headers
-        header = ['From: ' + fr,
-                  'To: ' + to,
-                  'Cc: ' + cc if cc else cc,
-                  'Subject: ' + sub,
-                  'Date: ' + dates,
-                  'Id: ' + msg['id'],
-                  'Content-type: ' + pmime]
+        ctype = 'html' if otype == 'eml' else otype
+        head  = ['**From:** ' + fr,
+                 '**To:** ' + to,
+                 '**Cc:** ' + cc if cc else cc,
+                 '**Subject:** ' + sub,
+                 '**Date:** ' + dates,
+                 '**Id:** ' + msg['id'],
+                 '**Content-type:** ' + pmime]
 
-        return [plain, os.linesep.join(filter(None, header)), datel, sub]
+        md_head    = ('  ' + os.linesep).join(filter(None, head))
+        plain_head = os.linesep.join(filter(None, head)).replace('*', '')
+        ft_head    = pandoc.convert_text(md_head, ctype, format = 'markdown')
+        ft_body    = pandoc.convert_text(plain, ctype,
+                                         format     = 'html',
+                                         extra_args = ['--smart'])
+
+        return [ft_body, ft_head, plain_head, datel, sub]
 
     def get_msg(self, msg_id):
         return self.messages.get(userId = 'me',
@@ -531,7 +871,7 @@ class gmail_query():
                                                messageId = msg_id,
                                                id = att_id).execute()
 
-def get_credentials(app_name, client_secret_file, scopes):
+def get_credentials(app_name, client_secret_file, scopes, flags = None):
     """Gets valid user credentials from storage.
 
     If nothing has been stored, or if the stored credentials are invalid,
@@ -629,7 +969,7 @@ def get_key_set(dictionary, keys, fallback = None):
     else:
         return fallback
 
-def print_df_query(df, outdir, tzstr, html):
+def print_df_query(df, outdir, tzstr, otype, ext):
     """Print all messages from df into outdir
 
     Args:
@@ -653,11 +993,11 @@ def print_df_query(df, outdir, tzstr, html):
         mkdir_recursive(outpath)
         try:
             for i in dfmsg.index:
-                print_df_msg(dfmsg.ix[i], outpath, tzstr, html)
+                print_df_msg(dfmsg.ix[i], outpath, tzstr, otype, ext)
         except:
-            print_df_msg(dfmsg, outpath, tzstr, html)
+            print_df_msg(dfmsg, outpath, tzstr, otype, ext)
 
-def print_df_msg(dfmsg, dest, tzstr, html, pretty = True):
+def print_df_msg(dfmsg, dest, tzstr, otype, ext):
     """Print message out to file
 
     Args:
@@ -674,12 +1014,14 @@ def print_df_msg(dfmsg, dest, tzstr, html, pretty = True):
     dstr = "%Y-%m-%d %H:%M " + tzstr
     try:
         h  = dfmsg['header'].values[0]
+        fh = dfmsg['ft_header'].values[0]
         b  = dfmsg['body'].values[0]
         f  = pd.to_datetime(dfmsg['date'].values).strftime(dstr)[0]
         fn = dfmsg['fn'].values
         a  = dfmsg['att'].values
     except:
         h  = dfmsg['header']
+        fh = dfmsg['ft_header']
         b  = dfmsg['body']
         fn = dfmsg['fn']
         a  = dfmsg['att']
@@ -689,18 +1031,25 @@ def print_df_msg(dfmsg, dest, tzstr, html, pretty = True):
             f = dfmsg['date'][0].strftime(dstr)
 
     try:
-        h = unicode(h).encode('utf-8')
-        b = unicode(b).encode('utf-8')
+        h  = unicode(h).encode('utf-8')
+        fh = unicode(fh).encode('utf-8')
+        b  = unicode(b).encode('utf-8')
     except:
         pass
 
-    if pretty and h.find('text/html') > 0:
-        try:
-            b = bs(b, "lxml").prettify().encode('utf-8')
-        except:
-            pass
+    if otype != 'eml':
+        with open(os.path.join(dest, f + ext), "wb") as fout:
+            print(fh + os.linesep + os.linesep, file = fout)
+            print(b, file = fout)
 
-    if fn:
+        if fn is not None:
+            with open(os.path.join(dest, fn), "wb") as fout:
+                if fn.endswith(' [ATTACHMENT T0O LARGE]'):
+                    fout.write(a)
+                else:
+                    fout.write(base64.urlsafe_b64decode(a))
+
+    if otype == 'eml' and fn is not None:
         msg_sep = '-q1w2e3r4t5'
         msg_c   = 'Content-type: multipart/mixed; boundary="%s"' % msg_sep
         hlist   = h.split(os.linesep)
@@ -712,10 +1061,7 @@ def print_df_msg(dfmsg, dest, tzstr, html, pretty = True):
         att_h  += [u'Content-Disposition: attachment; filename="%s"' % fn]
         att_h   = os.linesep.join(att_h)
 
-        # with open(os.path.join(dest, fn), "wb") as fout:
-        #     fout.write(base64.urlsafe_b64decode(a))
-
-        with open(os.path.join(dest, f), "wb") as fout:
+        with open(os.path.join(dest, f + ext), "wb") as fout:
             print(header + os.linesep, file = fout)
 
             print('--' + msg_sep, file = fout)
@@ -728,14 +1074,10 @@ def print_df_msg(dfmsg, dest, tzstr, html, pretty = True):
             print(att_wrap + os.linesep, file = fout)
 
             print('--' + msg_sep + '--', file = fout)
-    else:
-        with open(os.path.join(dest, f), "wb") as fout:
+    elif otype == 'eml':
+        with open(os.path.join(dest, f + ext), "wb") as fout:
             print(h + os.linesep, file = fout)
             print(b, file = fout)
-
-    if html:
-        hparse = "/home/mauricio/Documents/code/bin/gmail_query_to_html.rb"
-        os.system(hparse + ' "' + os.path.join(dest, f) + '"')
 
 def hard_wrap(text, width):
     nl  = int(len(text) / width)
@@ -747,7 +1089,7 @@ def hard_wrap(text, width):
 
     return os.linesep.join(hw)
 
-def apply_rules(srules, outdir, indir, infile):
+def apply_rules(srules, outdir, indir, infile, case):
     """Recursively applies rules in srules within outdir
 
     Args:
@@ -755,6 +1097,7 @@ def apply_rules(srules, outdir, indir, infile):
         outdir: Directory move the input file's folder.
         indir: Directory to move if infile matches rules.
         infile: Input file to apply the rules to.
+        case: Whether regex is case-sensitive
 
     Returns:
         Each key in srules is a sub-folder within outdir where indir
@@ -767,7 +1110,12 @@ def apply_rules(srules, outdir, indir, infile):
     for key, priority, rules in sorted(flat, key = itemgetter(1)):
         for i, line in enumerate(open(os.path.join(indir, infile))):
             for rule in rules:
-                if re.search(rule, line, re.IGNORECASE):
+                if case:
+                    search = re.search(rule, line)
+                else:
+                    search = re.search(rule, line, re.IGNORECASE)
+
+                if search:
                     mkdir_recursive(os.path.join(outdir, key))
                     move(indir, os.path.join(outdir, key))
                     return key
@@ -787,12 +1135,4 @@ def mkdir_recursive(directory):
 
 
 if __name__ == '__main__':
-    query  = gmail_query(outdir)
-    query.query(todays = todays,
-                bdays  = bdays,
-                ext    = ext,
-                html   = html,
-                mail   = mail,
-                first  = first,
-                sort   = sort,
-                sort_rules = sort_rules)
+    main()
