@@ -34,21 +34,21 @@ chmod +x ./gmail_query.py
 The last line will guide you through creating `$HOME/.gmail_query.conf`; the file will look like this:
 ```
 [Gmail]
-    email   = my.gmail.address@gmail.com
-    secret  = /path/to/client_secret.json
-    appname = Gmail API name
+email   = mauricio.caceres.bravo@gmail.com
+secret  = /home/mauricio/lib/bin/client_secret.json
+appname = Gmail API Python Quickstart
 
 [Setup]
-    output_folder          = /gmail/default/download/folder
-    output_type            = html
-    output_ext             = eml
-    download_attachments   = True
-    max_attachment_size    = 20MiB
-    query_days             = 1
-    threaded_first         = True
-    notify_email           = False
-    sorting_rules          = /path/to/sorting/rules.json
-    sorting_case_sensitive = False
+output_folder          = /home/mauricio/Documents/personal/99-email-dump
+output_type            = markdown_strict
+output_ext             = .md
+download_attachments   = True
+max_attachment_size    = 20MiB
+query_days             = 7
+threaded_first         = True
+notify_email           = False
+sorting_rules          = /home/mauricio/lib/lib/gmail_rules.json
+sorting_case_sensitive = False
 ```
 
 The options under `[Gmail]` are required. The options under `[Setup]` are optional and can be
@@ -64,7 +64,7 @@ gmail-query.py --mail --days-back 7 --first \
     --sort-rules gmail_rules.json --output-type html
 ```
 
-Though intended to be used from the command line, one can run the query from ython
+Though intended to be used from the command line, one can run the query from python
 ```python
 from gmail_query import gmail_query
 from dateutil import tz
@@ -118,9 +118,9 @@ Searches are *case insensitive* by default.
 
 There are two sets of options. First, Gmail options which are determined
 when you set up the [Gmail API](https://developers.google.com/gmail/api/quickstart/python)
-- email, your gmail account email.
-- secret, your secret API file.
-- appname, the app name you choose for this instance of the Gmail API.
+- `email`, your gmail account email.
+- `secret`, your secret API file.
+- `appname`, the app name you choose for this instance of the Gmail API.
 
 Then there are options that the program will assume as default when
 run. All these options can be changed when running the program, but
@@ -182,10 +182,9 @@ Notes
 While I have made an effort to make this script platform independent, I
 have only tested it on my local Linux machine.
 
-I realize that pandas is a rather annoying dependence to have, but I
+I do realize that pandas is a rather annoying dependence to have, but I
 wanted to download threaded messages into the same subfolder and using
-pandas seemed like the easiest way to group messages by thread. Feel
-free to modify the code if you have a better idea.
+pandas seemed like the easiest way to group messages by thread.
 
 Further, since I download messages by thread, I don't know a priori the
 depth of the message thread or whether a "thread" is really a single
