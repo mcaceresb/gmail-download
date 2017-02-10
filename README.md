@@ -35,11 +35,11 @@ The last line will guide you through creating `$HOME/.gmail_query.conf`; the fil
 ```
 [Gmail]
 email   = mauricio.caceres.bravo@gmail.com
-secret  = /home/mauricio/lib/bin/client_secret.json
+secret  = ~/lib/bin/client_secret.json
 appname = Gmail API Python Quickstart
 
 [Setup]
-output_folder          = /home/mauricio/Documents/personal/99-email-dump
+output_folder          = ~/Downloads/email
 output_type            = markdown_strict
 output_ext             = .md
 download_attachments   = True
@@ -47,7 +47,7 @@ max_attachment_size    = 20MiB
 query_days             = 7
 threaded_first         = True
 notify_email           = False
-sorting_rules          = /home/mauricio/lib/lib/gmail_rules.json
+sorting_rules          = ~/lib/lib/gmail_rules.json
 sorting_case_sensitive = False
 ```
 
