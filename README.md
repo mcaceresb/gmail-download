@@ -25,7 +25,7 @@ for instructions. Once you have the Gmail API set up, run
 ```bash
 mkdir $HOME/lib
 cd $HOME/lib
-git clone github.com/mcaceresb/gmail-download
+git clone https://github.com/mcaceresb/gmail-download
 cd gmail-download
 chmod +x ./gmail_query.py
 ./gmail_query.py setup
